@@ -85,7 +85,11 @@ def full_rescan(mpd_root):
     client = init_connection()
     # Get all songs from MPD and Blissify them
     all_songs = [x["file"] for x in client.listall() if "file" in x]
-    subprocess.check_call(["blissify", mpd_root] + all_songs)
+    nb_songs = len(all_songs)
+    for i in range(int(len(all_songs) / 100)):
+        subprocess.check_call(["blissify", mpd_root] + all_songs[i*100:(i+1)*100])
+    subprocess.check_call(["blissify", mpd_root] + all_songs[len(all_songs) - (len(all_songs) % 100):len(all_songs)])
+
     # Update the latest mtime stored
     latest_mtime = 0
     try:
