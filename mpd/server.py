@@ -13,6 +13,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import ipdb
 
 from mpd import MPDClient
 
@@ -95,18 +96,19 @@ def full_rescan(mpd_root):
     try:
         with open(os.path.join(_BLISSIFY_DATA_HOME, "latest_mtime.txt"),
                   "r") as fh:
-            latest_mtime = int(fh.read())
+            latest_mtime = int(str(fh.read()))
     except FileNotFoundError:
         pass
+
     for song in all_songs:
-        last_modified = client.find("file", song)["last_modified"]
+        last_modified = client.find("file", song)[0]["last-modified"]
         last_modified = int(dateutil.parser.parse(last_modified).timestamp())
         if last_modified > latest_mtime:
             latest_mtime = last_modified
     with open(os.path.join(_BLISSIFY_DATA_HOME, "latest_mtime.txt"), "w") as fh:
-        fh.write(latest_mtime)
+        print(latest_mtime)
+        fh.write(str(latest_mtime))
     close_connection(client)
-
 
 def rescan_errored(mpd_root):
     """
@@ -123,8 +125,9 @@ def rescan_errored(mpd_root):
     cur.execute("SELECT filename FROM errors")
     errors = cur.fetchall()
     # Rerun blissify on them
+    ipdb.set_trace()
     if errors is not None:
-        subprocess.check_call(["blissify", mpd_root] + errors)
+       subprocess.check_call(["blissify", mpd_root] + errors)
 
 
 def update_db(mpd_root):
@@ -137,16 +140,19 @@ def update_db(mpd_root):
         with open(os.path.join(_BLISSIFY_DATA_HOME, "latest_mtime.txt"), "r") as fh:
             latest_mtime = int(fh.read())
     except FileNotFoundError:
-        pass
+        logging.error("latest_mtime.txt file not found. Please call --full-rescan before --update.")
+        return
     songs = [x["file"] for x in client.find("modified-since", latest_mtime)]
     subprocess.check_call(["blissify", mpd_root] + songs)
     for song in songs:
-        last_modified = client.find("file", song)["last_modified"]
+        close_connection(client)
+        client = init_connection()
+        last_modified = client.find("file", song)[0]["last-modified"]
         last_modified = int(dateutil.parser.parse(last_modified).timestamp())
         if last_modified > latest_mtime:
             latest_mtime = last_modified
     with open(os.path.join(_BLISSIFY_DATA_HOME, "latest_mtime.txt"), "w") as fh:
-        fh.write(latest_mtime)
+        fh.write(str(latest_mtime))
     close_connection(client)
 
 
