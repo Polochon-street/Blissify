@@ -13,7 +13,6 @@ import os
 import shutil
 import sqlite3
 import subprocess
-import ipdb
 
 from mpd import MPDClient
 
@@ -125,7 +124,6 @@ def rescan_errored(mpd_root):
     cur.execute("SELECT filename FROM errors")
     errors = cur.fetchall()
     # Rerun blissify on them
-    ipdb.set_trace()
     if errors is not None:
        subprocess.check_call(["blissify", mpd_root] + errors)
 
