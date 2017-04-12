@@ -217,6 +217,7 @@ def _init():
 
     return client, conn, cur, current_song_coords
 
+
 def main_album(queue_length, option_best):
     client, conn, cur, current_song_coords = _init()
 
@@ -313,7 +314,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-length", help="The number of items to add to the MPD playlist.", type=int)
     parser.add_argument("--best-playlist", help="Makes the best possible playlist, always the same for a fixed song/album",
-        action='store_true', default=False)
+        action='store_true', default=True)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--song-based", help="Make a playlist based on single songs.",
         action="store_true", default=False)
