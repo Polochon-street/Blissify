@@ -95,7 +95,7 @@ def full_rescan(mpd_root):
     try:
         with open(os.path.join(_BLISSIFY_DATA_HOME, "latest_mtime.txt"),
                   "r") as fh:
-            latest_mtime = int(fh.read())
+            latest_mtime = int(str(fh.read()))
     except FileNotFoundError:
         pass
 
@@ -105,6 +105,7 @@ def full_rescan(mpd_root):
         if last_modified > latest_mtime:
             latest_mtime = last_modified
     with open(os.path.join(_BLISSIFY_DATA_HOME, "latest_mtime.txt"), "w") as fh:
+
         fh.write(str(latest_mtime))
     close_connection(client)
 
@@ -124,7 +125,7 @@ def rescan_errored(mpd_root):
     errors = cur.fetchall()
     # Rerun blissify on them
     if errors is not None:
-        subprocess.check_call(["blissify", mpd_root] + errors)
+       subprocess.check_call(["blissify", mpd_root] + errors)
 
 
 def update_db(mpd_root):
