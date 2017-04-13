@@ -218,7 +218,7 @@ def _init():
     return client, conn, cur, current_song_coords
 
 
-def main_album(queue_length, option_best):
+def main_album(queue_length, option_best=True):
     client, conn, cur, current_song_coords = _init()
 
     # Get 'queue_length' random albums
@@ -271,7 +271,7 @@ def main_album(queue_length, option_best):
     client.disconnect()
 
 
-def main_single(queue_length, option_best):
+def main_single(queue_length, option_best=True):
     client, conn, cur, current_song_coords = _init()
 
     # Get 'queue_length' random songs
