@@ -20,6 +20,7 @@ import sys
 import enum
 import mpd
 import random
+import numpy as np
 
 class PersistentMPDClient(mpd.MPDClient):
     """
@@ -100,6 +101,23 @@ if "XDG_DATA_HOME" in os.environ:
     _BLISSIFY_DATA_HOME = os.path.expandvars("$XDG_DATA_HOME/blissify")
 else:
     _BLISSIFY_DATA_HOME = os.path.expanduser("~/.local/share/blissify")
+
+
+def similarity(x, y):
+    angle_x_y = angle(x, y)
+    similarity = np.cos(angle_x_y) - (np.arctan(distance(x, y)) / (np.pi / 2))
+
+    return similarity
+
+
+def angle(x, y):
+    X = np.array([x['tempo'], x['amplitude'], x['frequency'], x['attack']])
+    Y = np.array([y['tempo'], y['amplitude'], y['frequency'], y['attack']])
+
+    unit_X = X / np.linalg.norm(X)
+    unit_Y = Y / np.linalg.norm(Y)
+
+    return np.arccos(np.clip(np.dot(unit_X, unit_Y), -1.0, 1.0))
 
 
 def distance(x, y):
@@ -218,6 +236,75 @@ def _init():
     return client, conn, cur, current_song_coords
 
 
+def main_goulag():
+    client, conn, cur, current_song_coords = _init()
+
+    client.clear()
+    # Non-negociable. If you live in a country with more working hours,
+    # immigrate somewhere else.
+    # If you live in a country with less, shoot me a PM <3
+    seven_hours = 25200
+    albums = client.list('album')
+    albums_duration = {
+        album: sum(map(
+            lambda x: float(x.get('duration', 0)),
+            client.search('album', album),
+        )) for album in albums
+    }
+
+    album = random.choice(albums)
+    seconds = albums_duration[album]
+    daily_albums = [album]
+    while seconds < seven_hours:
+        distance_array = []
+        album_name = album
+        cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE album=?", (album_name,))
+        target_album_set = cur.fetchall()
+
+        cur.execute("SELECT DISTINCT album FROM songs")
+        albums = cur.fetchall();
+
+        # Compute the distance between current album and all other albums
+        for tmp_album in albums:
+            # Get all songs in the album
+            cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE album=?", (tmp_album["album"],))
+            tmp_songs = cur.fetchall()
+            # Don't compute distance for the current album and albums already in the playlist
+            if(tmp_album["album"] == target_album_set[0]["album"] or
+               tmp_album["album"] in daily_albums):
+                # Skip current song and already processed songs
+                logging.debug("Skipping %s." % (tmp_album["album"]))
+                continue
+           
+            tmp_distance = distance_sets(tmp_songs, target_album_set)
+            distance_array.append({'Distance': tmp_distance, 'Album': tmp_songs})
+            logging.debug("Distance between %s and %s is %f." %
+                (target_album_set[0]["album"],
+                tmp_album["album"], tmp_distance))
+
+        # Ascending sort by distance (the lower the closer)
+        distance_array.sort(key=lambda x: x["Distance"])
+
+        # Chose between best album and one of the top 10 at random
+        indice = 0
+        
+        logging.info("Closest album found is \"%s\". Distance is %f." %
+            (distance_array[indice]["Album"][0]["album"], distance_array[indice]["Distance"]))
+
+        album = distance_array[indice]["Album"][0]["album"]
+        daily_albums += [album]
+        seconds += albums_duration[album]
+
+    files = [
+        song
+        for album in daily_albums
+        for song in client.list('filename', 'album', album)
+    ]
+
+    [client.add(song) for song in files]
+    client.play()
+
+
 def main_album(queue_length, option_best=True):
     client, conn, cur, current_song_coords = _init()
 
@@ -271,8 +358,57 @@ def main_album(queue_length, option_best=True):
     client.disconnect()
 
 
-def main_single(queue_length, option_best=True):
+def main_single(queue_length, option_best=True, option_np=True):
+    # TODO Reimplement not-option-best (see thesis)
     client, conn, cur, current_song_coords = _init()
+
+    if option_np:
+        playlist = []
+        force_vectors = []
+        cur.execute(
+            'SELECT id, tempo, amplitude, frequency'
+            ', attack, filename FROM songs'
+        )
+        songs = cur.fetchall()
+        for song in songs:
+            force_vector = np.array((
+                song['attack'],
+                song['amplitude'],
+                song['frequency'],
+                song['tempo'],
+            ))
+            playlist.append(song['filename'])
+            force_vectors.append(force_vector)
+
+        index = 0
+        if current_song_coords['filename'] in playlist:
+            index = playlist.index(current_song_coords['filename'])
+        A = force_vectors
+        norm = np.linalg.norm(A, axis=1)
+        unit_vector = A / norm[:, None]
+        angles_between_index = np.arccos(
+            np.clip(np.dot(unit_vector, unit_vector[index]), -1.0, 1.0),
+        )
+        distance_between_index = np.sqrt(np.sum((A[index] - A)**2, axis=1))
+        p = np.pi
+        similarity_vector = (
+            np.cos(angles_between_index) -
+            np.arctan(distance_between_index) / p
+        )
+        force_vectors = (force_vectors[index] - force_vectors)**2
+        force_vectors = np.sum(force_vectors, axis=1)
+        force_vectors = np.sqrt(force_vectors)
+        playlist = np.array(playlist)
+        playlist = playlist[force_vectors.argsort()]
+        force_vectors = force_vectors[force_vectors.argsort()]
+        similarity_vector = similarity_vector[(-similarity_vector).argsort()]
+        for i, song in enumerate(playlist[1: queue_length+1], 1):
+            client.add(song)
+            logging.info(
+                'Adding song: {}. Similarity is {}.'
+                .format(song, similarity_vector[i])
+            )
+        return
 
     # Get 'queue_length' random songs
     for i in range(queue_length):
@@ -320,6 +456,8 @@ if __name__ == "__main__":
         action="store_true", default=False)
     group.add_argument("--album-based", help="Make a playlist based on whole albums.",
         action="store_true", default=False)
+    group.add_argument("--goulag-based", help="Make a 7-hours playlist for the gulag.",
+        action="store_true", default=False)
 
     args = parser.parse_args()
     if args.queue_length:
@@ -331,4 +469,6 @@ if __name__ == "__main__":
         main_single(queue_length, args.best_playlist)
     elif args.album_based:
         main_album(queue_length, args.best_playlist)
+    elif args.goulag_based:
+        main_goulag()
 
