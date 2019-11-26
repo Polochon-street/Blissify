@@ -1,32 +1,44 @@
 #!/usr/bin/env python3
-"""
+'''
 This is a client for MPD to generate a random playlist starting from the last
 song of the current playlist and iterating using values computed using Bliss.
 
-MPD connection settings are taken from environment variables, following MPD_HOST
-and MPD_PORT scheme described in `mpc` man.
+MPD connection settings are taken from environment variables,
+following MPD_HOST and MPD_PORT scheme described in `mpc` man.
 
 You can pass an integer argument to the script to change the length of the
 generated playlist (default is to add 20 songs).
-"""
+'''
 import argparse
+from itertools import accumulate
 import logging
-import math
-import os
 import random
+import os
 import sqlite3
 import socket
 import sys
-import enum
 import mpd
-import random
 import numpy as np
 
+from sklearn.metrics import pairwise_distances
+
+DEFAULT_QUEUE_LENGTH = 20
+# 7 hours
+GULAG_DURATION = 25200
+logging.basicConfig(level=logging.INFO)
+
+
+if "XDG_DATA_HOME" in os.environ:
+    _BLISSIFY_DATA_HOME = os.path.expandvars("$XDG_DATA_HOME/blissify")
+else:
+    _BLISSIFY_DATA_HOME = os.path.expanduser("~/.local/share/blissify")
+
+
 class PersistentMPDClient(mpd.MPDClient):
-    """
+    '''
     From
     https://github.com/schamp/PersistentMPDClient/blob/master/PersistentMPDClient.py
-    """
+    '''
     def __init__(self, socket=None, host=None, port=None):
         super().__init__()
         self.socket = socket
@@ -45,7 +57,10 @@ class PersistentMPDClient(mpd.MPDClient):
         for cmd in self.command_list:
             if cmd not in self.command_blacklist:
                 if hasattr(super(PersistentMPDClient, self), cmd):
-                    super_fun = super(PersistentMPDClient, self).__getattribute__(cmd)
+                    super_fun = (
+                        super(PersistentMPDClient, self)
+                        .__getattribute__(cmd)
+                    )
                     new_fun = self.try_cmd(super_fun)
                     setattr(self, cmd, new_fun)
 
@@ -66,6 +81,10 @@ class PersistentMPDClient(mpd.MPDClient):
             return cmd_fun(*pargs, **kwargs)
         return fun
 
+    def add(self, path):
+        super(PersistentMPDClient, self).add(path)
+        logging.info('Added song {} to the playlist.'.format(path))
+
     # needs a name that does not collide with parent connect() function
     def do_connect(self):
         try:
@@ -83,98 +102,14 @@ class PersistentMPDClient(mpd.MPDClient):
             except BrokenPipeError:
                 try:
                     self.disconnect()
-                except:
-                    print("Second disconnect failed, yikes.")
+                except Exception:
+                    print('Second disconnect failed, yikes.')
             if self.socket:
                 self.connect(self.socket, None)
             else:
                 self.connect(self.host, self.port)
         except socket.error:
             print("Connection refused.")
-
-
-logging.basicConfig(level=logging.INFO)
-
-_QUEUE_LENGTH = 20
-
-if "XDG_DATA_HOME" in os.environ:
-    _BLISSIFY_DATA_HOME = os.path.expandvars("$XDG_DATA_HOME/blissify")
-else:
-    _BLISSIFY_DATA_HOME = os.path.expanduser("~/.local/share/blissify")
-
-
-def similarity(x, y):
-    angle_x_y = angle(x, y)
-    similarity = np.cos(angle_x_y) - (np.arctan(distance(x, y)) / (np.pi / 2))
-
-    return similarity
-
-
-def angle(x, y):
-    X = np.array([x['tempo'], x['amplitude'], x['frequency'], x['attack']])
-    Y = np.array([y['tempo'], y['amplitude'], y['frequency'], y['attack']])
-
-    unit_X = X / np.linalg.norm(X)
-    unit_Y = Y / np.linalg.norm(Y)
-
-    return np.arccos(np.clip(np.dot(unit_X, unit_Y), -1.0, 1.0))
-
-
-def distance(x, y):
-    """
-    Compute the distance between two songs.
-
-    Params:
-        - x: First song dict
-        - y: Second song dict
-    Returns: The cartesian distance between the two songs.
-    """
-    return math.sqrt(
-        (x["tempo"] - y["tempo"])**2 +
-        (x["amplitude"] - y["amplitude"])**2 +
-        (x["frequency"] - y["frequency"])**2 +
-        (x["attack"] - y["attack"])**2
-    )
-
-
-def mean_song(X):
-    """
-    Compute a "mean" song for a given iterable of song dicts.
-
-    Params:
-        - X: An iterable of song dicts.
-    Returns: A "mean" song, whose features are the mean features of the songs
-    in the iterable.
-    """
-
-    result = {'tempo': 0, 'amplitude': 0, 'frequency': 0, 'attack': 0}
-
-    count = len(X)
-
-    for song in X:
-        result["tempo"] += song["tempo"]
-        result["amplitude"] += song["amplitude"]
-        result["frequency"] += song["frequency"]
-        result["attack"] += song["attack"]
-
-    result["tempo"] /= count
-    result["amplitude"] /= count
-    result["frequency"] /= count
-    result["attack"] /= count
-    return result
-
-
-def distance_sets(X, Y):
-    """
-    Compute the distance between two iterables of song dicts, defined as the
-    distance between the two mean songs of the iterables.
-
-    Params:
-        - X: First iterable of song dicts.
-        - Y: First iterable of song dicts.
-    Returns: The distance between the two iterables.
-    """
-    return distance(mean_song(X), mean_song(Y))
 
 
 def _init():
@@ -224,11 +159,17 @@ def _init():
     logging.info("Currently played song is %s." % (current_song,))
 
     # Get current song coordinates
-    cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE filename=?", (current_song,))
+    cur.execute(
+        'SELECT id, tempo, amplitude, frequency, attack, filename, '
+        'album FROM songs WHERE filename=?',
+        (current_song,),
+    )
     current_song_coords = cur.fetchone()
     if current_song_coords is None:
-        logging.error("Current song %s is not in db. You should update the db." %
-                      (current_song,))
+        logging.error(
+            'Current song {} is not in db. You should update the db.'
+            .format((current_song,)),
+        )
         client.close()
         client.disconnect()
         sys.exit(1)
@@ -236,239 +177,161 @@ def _init():
     return client, conn, cur, current_song_coords
 
 
-def main_goulag():
-    client, conn, cur, current_song_coords = _init()
-
-    client.clear()
-    # Non-negociable. If you live in a country with more working hours,
-    # immigrate somewhere else.
-    # If you live in a country with less, shoot me a PM <3
-    seven_hours = 25200
-    albums = client.list('album')
-    albums_duration = {
-        album: sum(map(
-            lambda x: float(x.get('duration', 0)),
-            client.search('album', album),
-        )) for album in albums
-    }
-
-    album = random.choice(albums)
-    seconds = albums_duration[album]
-    daily_albums = [album]
-    while seconds < seven_hours:
-        distance_array = []
-        album_name = album
-        cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE album=?", (album_name,))
-        target_album_set = cur.fetchall()
-
-        cur.execute("SELECT DISTINCT album FROM songs")
-        albums = cur.fetchall();
-
-        # Compute the distance between current album and all other albums
-        for tmp_album in albums:
-            # Get all songs in the album
-            cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE album=?", (tmp_album["album"],))
-            tmp_songs = cur.fetchall()
-            # Don't compute distance for the current album and albums already in the playlist
-            if(tmp_album["album"] == target_album_set[0]["album"] or
-               tmp_album["album"] in daily_albums):
-                # Skip current song and already processed songs
-                logging.debug("Skipping %s." % (tmp_album["album"]))
-                continue
-           
-            tmp_distance = distance_sets(tmp_songs, target_album_set)
-            distance_array.append({'Distance': tmp_distance, 'Album': tmp_songs})
-            logging.debug("Distance between %s and %s is %f." %
-                (target_album_set[0]["album"],
-                tmp_album["album"], tmp_distance))
-
-        # Ascending sort by distance (the lower the closer)
-        distance_array.sort(key=lambda x: x["Distance"])
-
-        # Chose between best album and one of the top 10 at random
-        indice = 0
-        
-        logging.info("Closest album found is \"%s\". Distance is %f." %
-            (distance_array[indice]["Album"][0]["album"], distance_array[indice]["Distance"]))
-
-        album = distance_array[indice]["Album"][0]["album"]
-        daily_albums += [album]
-        seconds += albums_duration[album]
-
-    files = [
-        song
-        for album in daily_albums
-        for song in client.list('filename', 'album', album)
-    ]
-
-    [client.add(song) for song in files]
-    client.play()
+def make_album_based_playlist(
+    first_album_index,
+    distance_matrix,
+    playlist_length=DEFAULT_QUEUE_LENGTH,
+    chained_playlist=False,
+):
+    return (
+        np.argsort(distance_matrix[first_album_index])[1:playlist_length + 1]
+    )
 
 
-def main_album(queue_length, option_best=True):
-    client, conn, cur, current_song_coords = _init()
-
-    # Get 'queue_length' random albums
-    for i in range(queue_length):
-        # No cache management
-        # Get all songs from the current album
-        distance_array = []
-
-        # Get album name and all of this album's songs coordinates
-        album_name = current_song_coords["album"]
-        cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE album=?", (album_name,))
-        target_album_set = cur.fetchall()
-
-        # Get all albums
-        cur.execute("SELECT DISTINCT album FROM songs")
-        albums = cur.fetchall();
-
-        # Compute the distance between current album and all other albums
-        for tmp_album in albums:
-            # Get all songs in the album
-            cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename, album FROM songs WHERE album=?", (tmp_album["album"],))
-            tmp_songs = cur.fetchall()
-            # Don't compute distance for the current album and albums already in the playlist
-            if(tmp_album["album"] == target_album_set[0]["album"] or
-               ("file: %s" % (tmp_songs[0]["filename"],)) in client.playlist()):
-                # Skip current song and already processed songs
-                logging.debug("Skipping %s." % (tmp_album["album"]))
-                continue
-           
-            tmp_distance = distance_sets(tmp_songs, target_album_set)
-            distance_array.append({'Distance': tmp_distance, 'Album': tmp_songs})
-            logging.debug("Distance between %s and %s is %f." %
-                (target_album_set[0]["album"],
-                tmp_album["album"], tmp_distance))
-
-        # Ascending sort by distance (the lower the closer)
-        distance_array.sort(key=lambda x: x["Distance"])
-
-        # Chose between best album and one of the top 10 at random
-        indice = 0 if option_best else random.randrange(10)
-        
-        logging.info("Closest album found is \"%s\". Distance is %f." %
-            (distance_array[indice]["Album"][0]["album"], distance_array[indice]["Distance"]))
-
-        for song in distance_array[indice]["Album"]:
-            client.add(song["filename"])
-
-    conn.close()
-    client.close()
-    client.disconnect()
-
-
-def main_single(queue_length, option_best=True, option_np=True):
-    # TODO Reimplement not-option-best (see thesis)
-    client, conn, cur, current_song_coords = _init()
-
-    if option_np:
+def make_song_based_playlist(
+    first_song_index,
+    distance_matrix,
+    playlist_length=DEFAULT_QUEUE_LENGTH,
+    chained_playlist=False,
+):
+    if chained_playlist:
         playlist = []
-        force_vectors = []
-        cur.execute(
-            'SELECT id, tempo, amplitude, frequency'
-            ', attack, filename FROM songs'
-        )
-        songs = cur.fetchall()
-        for song in songs:
-            force_vector = np.array((
-                song['attack'],
-                song['amplitude'],
-                song['frequency'],
-                song['tempo'],
-            ))
-            playlist.append(song['filename'])
-            force_vectors.append(force_vector)
-
-        index = 0
-        if current_song_coords['filename'] in playlist:
-            index = playlist.index(current_song_coords['filename'])
-        A = force_vectors
-        norm = np.linalg.norm(A, axis=1)
-        unit_vector = A / norm[:, None]
-        angles_between_index = np.arccos(
-            np.clip(np.dot(unit_vector, unit_vector[index]), -1.0, 1.0),
-        )
-        distance_between_index = np.sqrt(np.sum((A[index] - A)**2, axis=1))
-        p = np.pi
-        similarity_vector = (
-            np.cos(angles_between_index) -
-            np.arctan(distance_between_index) / p
-        )
-        force_vectors = (force_vectors[index] - force_vectors)**2
-        force_vectors = np.sum(force_vectors, axis=1)
-        force_vectors = np.sqrt(force_vectors)
-        playlist = np.array(playlist)
-        playlist = playlist[force_vectors.argsort()]
-        force_vectors = force_vectors[force_vectors.argsort()]
-        similarity_vector = similarity_vector[(-similarity_vector).argsort()]
-        for i, song in enumerate(playlist[1: queue_length+1], 1):
-            client.add(song)
-            logging.info(
-                'Adding song: {}. Similarity is {}.'
-                .format(song, similarity_vector[i])
+        current_song_index = first_song_index
+        for _ in range(playlist_length + 1):
+            # Get the first closest song not already in playlist
+            current_song_index = next(
+                (
+                    s_id
+                    for s_id in np.argsort(distance_matrix[current_song_index])
+                    if s_id not in playlist
+                )
             )
-        return
+            playlist.append(current_song_index)
+        return np.array(playlist[1:])
+    return np.argsort(distance_matrix[first_song_index])[1:playlist_length + 1]
 
-    # Get 'queue_length' random songs
-    for i in range(queue_length):
-        distance_array = []
 
-        # Get all other songs coordinates and iterate on them
-        cur.execute("SELECT id, tempo, amplitude, frequency, attack, filename FROM songs")
-        for tmp_song_data in cur.fetchall():
-            # Skip current song and already processed songs
-            if(tmp_song_data["filename"] == current_song_coords["filename"] or
-               ("file: %s" % (tmp_song_data["filename"],)) in client.playlist()):
-                logging.debug("Skipping %s." % (tmp_song_data["filename"]))
-                continue
-            # Compute distance between current song and songs in the loop
-            tmp_distance = distance(tmp_song_data, current_song_coords)
-            distance_array.append({'Distance': tmp_distance, 'Song': tmp_song_data})
-            logging.debug("Distance between %s and %s is %f." %
-                (current_song_coords["filename"],
-                tmp_song_data["filename"], tmp_distance))
+def main(opts):
+    client, conn, cur, current_song_coords = _init()
 
-        # Ascending sort by distance (the lower the closer)
-        distance_array.sort(key=lambda x: x['Distance'])
+    if opts.album_based or opts.gulag_based:
+        albums_songs = np.array(
+            cur.execute('SELECT id, album FROM songs ORDER BY album')
+            .fetchall()
+        )
+        albums_vector = np.array(
+            cur.execute(
+                'SELECT album, AVG(tempo), AVG(amplitude), AVG(frequency), '
+                'AVG(attack) FROM songs GROUP BY album ORDER BY album'
+            ).fetchall()
+        )
+        distance_matrix = pairwise_distances(albums_vector[:, 1:])
+    if opts.album_based:
+        # Remove the album name for computing the pairwise distance
+        first_album_index = np.where(
+            albums_vector[:, 0] == current_song_coords['album']
+        )[0][0]
+        albums_idx = make_album_based_playlist(
+            first_album_index,
+            distance_matrix,
+            playlist_length=DEFAULT_QUEUE_LENGTH,
+            chained_playlist=False,
+        )
+        playlist_album_names = albums_vector[albums_idx][:, 0]
+        playlist_indices = [
+            int(song_id) - 1 for song_id, album in albums_songs
+            if album in playlist_album_names
+        ]
+    elif opts.gulag_based:
+        client.clear()
+        albums_duration = {
+            i: sum(map(
+                lambda x: float(x.get('duration', 0)),
+                client.find('album', album),
+            )) for i, album in enumerate(albums_vector[:, 0])
+        }
+        # Remove the album name for computing the pairwise distance
+        first_album_index = np.random.randint(0, len(albums_vector))
+        albums_idx = np.argsort(distance_matrix[first_album_index])
+        i = next(
+            i for i, acc in
+            enumerate(accumulate(map(albums_duration.get, albums_idx)))
+            if acc > GULAG_DURATION
+        )
+        playlist_album_names = albums_vector[albums_idx[:i+1]][:, 0]
+        playlist_indices = [
+            int(song_id) - 1 for song_id, album in albums_songs
+            if album in playlist_album_names
+        ]
+    else:
+        force_vectors = np.array(
+            cur.execute(
+                'SELECT tempo, amplitude, frequency, attack '
+                'FROM songs ORDER BY id'
+            ).fetchall()[:][:]
+        )
+        distance_matrix = pairwise_distances(force_vectors)
+        playlist_indices = make_song_based_playlist(
+            current_song_coords['id'] - 1,
+            distance_matrix,
+            playlist_length=opts.number_songs,
+            chained_playlist=opts.chained_playlist,
+        )
 
-        # Chose between best album and one of the top 10 at random
-        indice = 0 if option_best else random.randrange(10)
-
-        current_song_coords = distance_array[indice]['Song']
-
-        client.add(current_song_coords["filename"])
-        logging.info("Found a close song: %s. Distance is %f." %
-            (current_song_coords["filename"], distance_array[0]['Distance']))
+    filenames = np.array([
+        row['filename']
+        for row in cur.execute('SELECT filename FROM songs ORDER BY id')
+    ])
+    playlist = filenames[playlist_indices]
+    for song_path in playlist:
+        client.add(song_path)
 
     conn.close()
     client.close()
     client.disconnect()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--queue-length", help="The number of items to add to the MPD playlist.", type=int)
-    parser.add_argument("--best-playlist", help="Makes the best possible playlist, always the same for a fixed song/album",
-        action='store_true', default=True)
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--song-based", help="Make a playlist based on single songs.",
-        action="store_true", default=False)
-    group.add_argument("--album-based", help="Make a playlist based on whole albums.",
-        action="store_true", default=False)
-    group.add_argument("--goulag-based", help="Make a 7-hours playlist for the gulag.",
-        action="store_true", default=False)
-
+    parser.add_argument(
+        '-n',
+        '--number-songs',
+        help='The number of items to add to the MPD playlist.',
+        type=int,
+        default=DEFAULT_QUEUE_LENGTH,
+    )
+    parser.add_argument(
+        '-c',
+        '--chained-playlist',
+        help=(
+            'Makes the playlist be generated from one song to the '
+            'other closest one, instead of all the songs closer to the '
+            'first one.',
+        ),
+        action='store_true',
+        default=False,
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '-s',
+        '--song-based',
+        help='Make a playlist based on single songs.',
+        action='store_true',
+        default=True,
+    )
+    group.add_argument(
+        '-a',
+        '--album-based',
+        help='Make a playlist based on whole albums.',
+        action='store_true',
+        default=False,
+    )
+    group.add_argument(
+        '-g',
+        '--gulag-based',
+        help='Make a 7-hours album playlist for the gulag.',
+        action='store_true',
+        default=False,
+    )
     args = parser.parse_args()
-    if args.queue_length:
-        queue_length = args.queue_length
-    else:
-        queue_length = _QUEUE_LENGTH
-
-    if args.song_based:
-        main_single(queue_length, args.best_playlist)
-    elif args.album_based:
-        main_album(queue_length, args.best_playlist)
-    elif args.goulag_based:
-        main_goulag()
-
+    main(args)
